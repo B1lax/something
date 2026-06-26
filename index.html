@@ -50,7 +50,7 @@
 
       if (missingLetters.length === 0 && wordMsg === '') {
         result.className = 'result success';
-        result.textContent = '🎉 Pusslet löst! Din mening uppfyller alla krav.';
+        result.innerHTML = '<span style="font-size:2rem;font-weight:700;letter-spacing:4px;">antilax</span>';
       } else {
         result.className = 'result error';
         let msg = '';
@@ -65,5 +65,3 @@
   </script>
 </body>
 </html>
-
-
