@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BILAX — Terminal Adventure</title>
+  <title>BILAX 1.8 — Terminal Adventure</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -98,7 +98,7 @@
     .line {
       color: #00cc44;
       font-size: 13px;
-      line-height: 1.65;
+      line-height: 1.85;
       white-space: pre-wrap;
       text-shadow: 0 0 6px rgba(0, 200, 60, 0.4);
       display: block;
@@ -274,8 +274,8 @@ const ROOM_DEFS = {
     ],
     exits: { down: "hallway" },
     hiding: ["behind the old trunk"],
-    startItems: [],
-    startHidden: []
+    startItems: ["key"],
+    startHidden: ["key"]
   },
   kitchen: {
     name: "Kitchen",
@@ -333,10 +333,11 @@ function newGame() {
     hiding:        false,
     gameOver:      false,
     gameWon:       false,
-    bilax:         "hallway",
+    bilax:         "attic",
     turn:          0,
-    listenSafe:    false,  // true after LISTEN says "somewhere else" — next move guaranteed safe
-    bilaxEntering: false   // true = Bilax walked INTO player's room this turn; 1-turn grace
+    hideStreak:    0,      // consecutive HIDE commands; resets on any other action
+    listenSafe:    false,  // true after any LISTEN — next move destination is forbidden for Bilax
+    bilaxEntering: null    // room ID Bilax was entering (grace turn); null when inactive
   };
 }
 
@@ -346,22 +347,30 @@ function bilaxNeighbors() {
   return Object.values(rooms[gs.bilax].exits).filter(d => !d.startsWith("_"));
 }
 
-function moveBilax() {
-  // If player just got a clean LISTEN, keep Bilax out of the player's current room
-  const forbidden = gs.listenSafe ? gs.room : null;
+function moveBilax(extraForbidden = null) {
+  // Collect all rooms Bilax must not enter this turn
+  const forbidSet = new Set();
+  if (extraForbidden) forbidSet.add(extraForbidden);
+  if (gs.listenSafe)  forbidSet.add(gs.room);  // room where player listened (or just entered while listenSafe)
+  gs.listenSafe = false;  // consume here so it applies exactly once
+
   const prevRoom = gs.bilax;
 
   if (Math.random() < 0.55) {
-    const nbrs = bilaxNeighbors().filter(r => r !== forbidden);
-    if (nbrs.length) {
-      gs.bilax = nbrs[Math.floor(Math.random() * nbrs.length)];
-    }
-  } else if (forbidden && gs.bilax === gs.room) {
-    const elsewhere = bilaxNeighbors().filter(r => r !== forbidden);
+    const nbrs = bilaxNeighbors().filter(r => !forbidSet.has(r));
+    if (nbrs.length) gs.bilax = nbrs[Math.floor(Math.random() * nbrs.length)];
+  } else if (forbidSet.has(gs.bilax)) {
+    // Bilax is sitting in a forbidden room — push him out
+    const elsewhere = bilaxNeighbors().filter(r => !forbidSet.has(r));
     if (elsewhere.length) gs.bilax = elsewhere[Math.floor(Math.random() * elsewhere.length)];
   }
 
-  // Return true if Bilax moved INTO the player's current room this turn
+  // Safety net: if Bilax is still in a forbidden room after either branch, force him out
+  if (forbidSet.has(gs.bilax)) {
+    const safe = bilaxNeighbors().filter(r => !forbidSet.has(r));
+    if (safe.length) gs.bilax = safe[Math.floor(Math.random() * safe.length)];
+  }
+
   return prevRoom !== gs.bilax && gs.bilax === gs.room;
 }
 
@@ -373,7 +382,11 @@ function bilaxAdjacent() {
 
 function checkEncounter() {
   if (gs.bilax !== gs.room) return "safe";
-  if (gs.hiding && Math.random() < 0.80) return "hiding_safe";
+  if (gs.hiding) {
+    const chances = [1.0, 0.80, 0.60, 0.50];
+    const prob = chances[Math.min(gs.hideStreak - 1, 3)];
+    if (Math.random() < prob) return "hiding_safe";
+  }
   return "caught";
 }
 
@@ -399,7 +412,6 @@ function describeRoom(roomId) {
 
   if (isRoomDark(roomId)) {
     for (const line of r.descDark) pr(line, "dim");
-    if (gs.bilax === roomId) pr("Something is in here with you...", "danger");
     return;
   }
 
@@ -410,10 +422,6 @@ function describeRoom(roomId) {
 
   if (r.hiding.length)
     pr("You could hide " + r.hiding[0] + ".");
-
-  if (gs.bilax === roomId) {
-    pr("BILAX IS HERE — hide or run!", "danger");
-  }
 }
 
 // ─── Win / lose ───────────────────────────────────────────────────────────────
@@ -450,17 +458,23 @@ function afterAction() { return true; }
 function checkBilaxEncounter(bilaxJustMoved) {
   // ── Resolve grace turn: Bilax entered last turn, player had one chance ─────
   if (gs.bilaxEntering) {
-    gs.bilaxEntering = false;
-    const result = checkEncounter();
-    if (result === "hiding_safe") {
-      pr("Bilax looms over your hiding spot... and moves on.", "warn");
-      const elsewhere = bilaxNeighbors().filter(r => r !== gs.room);
-      if (elsewhere.length) gs.bilax = elsewhere[Math.floor(Math.random() * elsewhere.length)];
-      else gs.bilax = bilaxNeighbors()[0] || gs.bilax;
-      pr("You hear heavy footsteps recede toward the " + rooms[gs.bilax].name + ".", "warn");
+    const enteringRoom = gs.bilaxEntering;
+    gs.bilaxEntering = null;
+    if (gs.room !== enteringRoom) {
+      // Player fled — safe, Bilax stays wherever he ended up
       return true;
     }
-    // Didn't hide or flee — caught
+    // Force Bilax into the room regardless of what moveBilax did — the warning was real
+    gs.bilax = gs.room;
+    const result = checkEncounter();
+    if (result === "hiding_safe") {
+      pr("Bilax steps inside... looms over your hiding spot... and moves on.", "warn");
+      const elsewhere = bilaxNeighbors().filter(r => r !== gs.room);
+      if (elsewhere.length) gs.bilax = elsewhere[Math.floor(Math.random() * elsewhere.length)];
+      pr("You hear heavy footsteps recede.", "warn");
+      return true;
+    }
+    // Didn't hide — caught
     caught();
     return false;
   }
@@ -473,8 +487,7 @@ function checkBilaxEncounter(bilaxJustMoved) {
     pr("He sniffs the air and shuffles on.", "warn");
     const elsewhere = bilaxNeighbors().filter(r => r !== gs.room);
     if (elsewhere.length) gs.bilax = elsewhere[Math.floor(Math.random() * elsewhere.length)];
-    else gs.bilax = bilaxNeighbors()[0] || gs.bilax;
-    pr("You hear heavy footsteps recede toward the " + rooms[gs.bilax].name + ".", "warn");
+    pr("You hear heavy footsteps recede.", "warn");
     return true;
   }
 
@@ -483,7 +496,7 @@ function checkBilaxEncounter(bilaxJustMoved) {
     if (bilaxJustMoved) {
       pr("A shape darkens the doorway. BILAX has entered the room.", "danger");
       pr("HIDE or FLEE — now!", "danger");
-      gs.bilaxEntering = true;
+      gs.bilaxEntering = gs.room;
       return true;
     }
     caught();
@@ -516,16 +529,17 @@ function cmdHelp() {
 
 function cmdLook() {
   describeRoom(gs.room);
+  if (gs.bilax === gs.room) pr("BILAX IS HERE — hide or run!", "danger");
 }
 
 function cmdGo(dir) {
   const dirMap = { n:"north", s:"south", e:"east", w:"west", u:"up", d:"down" };
   const full = dirMap[dir] || dir;
-  if (!full) { pr("Go where?", "warn"); return; }
+  if (!full) { pr("Go where?", "warn"); return false; }
 
   const exits = rooms[gs.room].exits;
   const dest = exits[full];
-  if (!dest) { pr("You can't go that way.", "warn"); return; }
+  if (!dest) { pr("You can't go that way.", "warn"); return false; }
 
   if (dest === "_front_door") {
     if (gs.inv.includes("key")) {
@@ -533,7 +547,7 @@ function cmdGo(dir) {
     } else {
       pr("The front door is locked. You need a key to open it.", "warn");
     }
-    return;
+    return true;
   }
 
   // Player walked into Bilax's room — instant death
@@ -541,14 +555,14 @@ function cmdGo(dir) {
     gs.room = dest;
     pr("You step into the " + rooms[dest].name + " — Bilax is right there.", "danger");
     caught();
-    return;
+    return true;
   }
 
   gs.room = dest;
   gs.hiding = false;
-  gs.listenSafe = false;
-  gs.bilaxEntering = false;
+  gs.bilaxEntering = null;
   describeRoom(gs.room);
+  return true;
 }
 
 function cmdSearch() {
@@ -660,7 +674,6 @@ function cmdTake(item) {
     return;
   }
   const r = rooms[gs.room];
-  const vis = visibleItems(gs.room);
 
   if (!r.items.includes(item)) {
     pr("There's no " + item + " here.", "warn");
@@ -698,7 +711,7 @@ function cmdListen() {
     return;
   }
   if (bilaxAdjacent()) {
-    gs.listenSafe = false;
+    gs.listenSafe = true;
     const dirs = Object.entries(rooms[gs.room].exits)
       .filter(([, v]) => v === gs.bilax)
       .map(([k]) => k.toUpperCase());
@@ -774,7 +787,7 @@ function dispatch(raw) {
   lineDelay = 30;
 
   switch (cmd) {
-    case "help":  case "?":           cmdHelp();         break;
+    case "help":  case "?":           cmdHelp(); gs.turn--; return;
     case "look":  case "l":           cmdLook();         break;
     case "search":                    cmdSearch();       break;
     case "examine": case "x":
@@ -789,13 +802,13 @@ function dispatch(raw) {
     case "read":                      cmdRead(args);     break;
     case "restart":                   startGame();       return;
     case "go":    case "move":
-    case "walk":  case "run":         cmdGo(args);       break;
-    case "north": case "n":           cmdGo("north");    break;
-    case "south": case "s":           cmdGo("south");    break;
-    case "east":  case "e":           cmdGo("east");     break;
-    case "west":  case "w":           cmdGo("west");     break;
-    case "up":    case "u":           cmdGo("up");       break;
-    case "down":  case "d":           cmdGo("down");     break;
+    case "walk":  case "run":         if (!cmdGo(args))    { gs.turn--; return; } break;
+    case "north": case "n":           if (!cmdGo("north")) { gs.turn--; return; } break;
+    case "south": case "s":           if (!cmdGo("south")) { gs.turn--; return; } break;
+    case "east":  case "e":           if (!cmdGo("east"))  { gs.turn--; return; } break;
+    case "west":  case "w":           if (!cmdGo("west"))  { gs.turn--; return; } break;
+    case "up":    case "u":           if (!cmdGo("up"))    { gs.turn--; return; } break;
+    case "down":  case "d":           if (!cmdGo("down"))  { gs.turn--; return; } break;
     default:
       pr("Unknown command. Type HELP for a list of commands.", "warn");
       gs.turn--;
@@ -803,10 +816,22 @@ function dispatch(raw) {
   }
 
   if (!gs.gameOver && !gs.gameWon) {
-    // Expire last turn's hide UNLESS this turn's command was HIDE itself
-    if (cmd !== "hide") gs.hiding = false;
-    const bilaxJustMoved = moveBilax();
-    checkBilaxEncounter(bilaxJustMoved);
+    if (cmd === "hide") {
+      gs.hideStreak++;
+    } else {
+      gs.hideStreak = 0;
+      gs.hiding = false;
+    }
+    const movedCmds = new Set(["go","move","walk","run","north","n","south","s","east","e","west","w","up","u","down","d"]);
+    const forbidRoom = movedCmds.has(cmd) ? gs.room : null;
+    // On any listen, Bilax doesn't move — info stays accurate and next move destination is safe.
+    if (cmd === "listen") {
+      // Just check if Bilax is already here (don't move him)
+      checkBilaxEncounter(false);
+    } else {
+      const bilaxJustMoved = moveBilax(forbidRoom);
+      checkBilaxEncounter(bilaxJustMoved);
+    }
   }
 }
 
@@ -848,7 +873,7 @@ document.addEventListener("click", () => cmdInput.focus());
 function printIntro() {
   pr("╔══════════════════════════════════════════════════╗", "title");
   pr("║                                                  ║", "title");
-  pr("║   B  I  L  A  X  —  A Terminal Adventure        ║", "title");
+  pr("║   B  I  L  A  X  1.8  —  A Terminal Adventure   ║", "title");
   pr("║                                                  ║", "title");
   pr("╚══════════════════════════════════════════════════╝", "title");
   prBlank();
